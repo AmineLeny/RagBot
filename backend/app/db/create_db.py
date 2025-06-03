@@ -4,7 +4,7 @@ from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 def create_database_if_not_exists():
     db_name = "ragbot_db"
     db_user = "postgres"
-    db_password = "toor"
+    db_password = "amine123"
     db_host = "localhost"
     db_port = "5432"
 

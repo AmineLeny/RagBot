@@ -1,6 +1,8 @@
 import logging
 from typing import Any, Dict, List, Optional
 from app.services.VectorStore import ChromaVectorStoreService
+from app.services.LLMService import LLMService
+from app.services.EmbeddingService import get_embedding_service
 
 # Configuration du logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -32,6 +34,10 @@ class RAGService:
     )
     
     self.embedding_dimension = embedding_dimension
+    
+    # Add LLM and embedding services
+    self.llm_service = LLMService()
+    self.embedding_service = get_embedding_service()
     
     # Statistiques
     self.processed_documents = 0
@@ -189,5 +195,83 @@ class RAGService:
       Succès de l'opération
     """
     return self.vector_store.persist()
+
+  async def generate_response(
+    self,
+    query: str,
+    documents: List = None,
+    conversation_id: str = None,
+    model_settings: Dict = None
+  ) -> Dict[str, Any]:
+    """
+    Generate a response using RAG (Retrieval-Augmented Generation)
+    
+    Args:
+      query: User's question
+      documents: List of document objects to search in
+      conversation_id: ID of the conversation
+      model_settings: Optional model configuration
+        
+    Returns:
+      Dictionary containing the response and metadata
+    """
+    try:
+      # Get query embedding
+      query_embedding = self.embedding_service.get_embeddings([query])[0]
+      
+      # Build context from documents
+      context = ""
+      references = []
+      
+      if documents:
+        # Filter search to specific documents
+        doc_ids = [str(doc.vector_id) for doc in documents]
+        filters = {"document_id": {"$in": doc_ids}}
+        
+        # Search for relevant chunks
+        search_results = self.query(
+          query_embedding=query_embedding,
+          k=5,
+          filters=filters
+        )
+        
+        # Build context and references
+        context_parts = []
+        for result in search_results:
+          context_parts.append(result["text"])
+          references.append({
+            "document_id": result["metadata"].get("document_id"),
+            "document_name": next((doc.original_filename for doc in documents 
+                                 if str(doc.vector_id) == result["metadata"].get("document_id")), "Unknown"),
+            "chunk_text": result["text"][:200] + "..." if len(result["text"]) > 200 else result["text"],
+            "similarity_score": 1 - result.get("distance", 0.5)  # Convert distance to similarity
+          })
+        
+        context = "\n\n".join(context_parts)
+      
+      # Generate response using LLM
+      if context:
+        system_message = "You are a helpful assistant. Answer the user's question based on the provided context. If the context doesn't contain relevant information, say so clearly."
+        response_text = self.llm_service.generate_response(
+          prompt=query,
+          context=context,
+          system_message=system_message
+        )
+      else:
+        # No documents or no relevant context found
+        response_text = self.llm_service.generate_response(
+          prompt=query,
+          system_message="You are a helpful assistant. Answer the user's question directly."
+        )
+      
+      return {
+        "answer": response_text,
+        "conversation_id": conversation_id,
+        "references": references
+      }
+      
+    except Exception as e:
+      logger.error(f"Error generating RAG response: {str(e)}")
+      raise RuntimeError(f"Failed to generate response: {str(e)}")
 
 rag_service = RAGService(persist_directory="./chroma_test_db")
